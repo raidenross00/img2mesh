@@ -80,6 +80,7 @@ function loadModel(jobId) {
     textureLoader.load(textureUrl, (texture) => {
         console.log("[img2mesh] Texture loaded:", texture.image.width, "x", texture.image.height);
         texture.colorSpace = THREE.SRGBColorSpace;
+        texture.flipY = false;
 
         const material = new THREE.MeshStandardMaterial({
             map: texture,
