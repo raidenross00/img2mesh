@@ -82,6 +82,25 @@ async def download_model(job_id: str, fmt: str):
     )
 
 
+@app.get("/api/assets/{job_id}/{filename}")
+async def download_asset(job_id: str, filename: str):
+    """Serve MTL and texture files for the OBJ viewer."""
+    file_path = OUTPUTS_DIR / job_id / filename
+    if not file_path.exists():
+        return JSONResponse({"error": "File not found"}, status_code=404)
+
+    media_types = {
+        ".mtl": "text/plain",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+    }
+    ext = file_path.suffix.lower()
+    return FileResponse(
+        path=str(file_path),
+        media_type=media_types.get(ext, "application/octet-stream"),
+    )
+
+
 # Serve static frontend
 app.mount("/", StaticFiles(directory=str(BASE_DIR / "static"), html=True), name="static")
 

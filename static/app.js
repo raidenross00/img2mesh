@@ -1,10 +1,104 @@
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
+import { MTLLoader } from "three/addons/loaders/MTLLoader.js";
+
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("fileInput");
 const previewImg = document.getElementById("previewImg");
 const statusEl = document.getElementById("status");
 const viewerWrapper = document.getElementById("viewerWrapper");
-const modelViewer = document.getElementById("modelViewer");
+const canvas = document.getElementById("viewerCanvas");
 const downloads = document.getElementById("downloads");
+
+let renderer, scene, camera, controls, currentModel;
+
+function initViewer() {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a2e);
+
+    camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+    camera.position.set(0, 0.5, 2.5);
+
+    controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 3;
+    controls.target.set(0, 0, 0);
+
+    // Lighting
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambient);
+    const dir1 = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir1.position.set(2, 3, 2);
+    scene.add(dir1);
+    const dir2 = new THREE.DirectionalLight(0xffffff, 0.4);
+    dir2.position.set(-2, 1, -1);
+    scene.add(dir2);
+
+    resizeViewer();
+    animate();
+}
+
+function resizeViewer() {
+    const w = viewerWrapper.clientWidth;
+    const h = viewerWrapper.clientHeight || 500;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+}
+
+function loadModel(jobId) {
+    if (!renderer) initViewer();
+
+    // Remove previous model
+    if (currentModel) {
+        scene.remove(currentModel);
+        currentModel = null;
+    }
+
+    const mtlUrl = `/api/assets/${jobId}/${jobId}.mtl`;
+    const objUrl = `/api/download/${jobId}.obj`;
+    const baseUrl = `/api/assets/${jobId}/`;
+
+    const mtlLoader = new MTLLoader();
+    mtlLoader.setResourcePath(baseUrl);
+    mtlLoader.load(mtlUrl, (materials) => {
+        materials.preload();
+        const objLoader = new OBJLoader();
+        objLoader.setMaterials(materials);
+        objLoader.load(objUrl, (obj) => {
+            // Center and fit the model
+            const box = new THREE.Box3().setFromObject(obj);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const scale = 1.5 / maxDim;
+            obj.scale.setScalar(scale);
+            obj.position.sub(center.multiplyScalar(scale));
+
+            scene.add(obj);
+            currentModel = obj;
+
+            // Reset camera
+            camera.position.set(0, 0.5, 2.5);
+            controls.target.set(0, 0, 0);
+            controls.update();
+            resizeViewer();
+        });
+    });
+}
 
 // Drag-and-drop handlers
 dropzone.addEventListener("click", () => fileInput.click());
@@ -36,7 +130,6 @@ function handleFile(file) {
         return;
     }
 
-    // Show preview
     const reader = new FileReader();
     reader.onload = (e) => {
         previewImg.src = e.target.result;
@@ -44,7 +137,6 @@ function handleFile(file) {
     };
     reader.readAsDataURL(file);
 
-    // Reset UI
     viewerWrapper.style.display = "none";
     downloads.style.display = "none";
 
@@ -113,12 +205,9 @@ async function pollStatus(jobId) {
 }
 
 function showResult(jobId, formats) {
-    // Show 3D viewer with GLB
-    const glbUrl = `/api/download/${jobId}.glb`;
-    modelViewer.setAttribute("src", glbUrl);
     viewerWrapper.style.display = "block";
+    loadModel(jobId);
 
-    // Show download links
     downloads.innerHTML = "";
     for (const fmt of formats) {
         const a = document.createElement("a");
@@ -134,3 +223,7 @@ function setStatus(html, isError = false) {
     statusEl.innerHTML = html;
     statusEl.className = "status" + (isError ? " error" : "");
 }
+
+window.addEventListener("resize", () => {
+    if (renderer) resizeViewer();
+});
