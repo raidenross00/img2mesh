@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
-import { MTLLoader } from "three/addons/loaders/MTLLoader.js";
+// MTLLoader removed — we load texture manually for reliability
 
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("fileInput");
@@ -71,21 +71,34 @@ function loadModel(jobId) {
     // Ensure layout is complete before sizing
     requestAnimationFrame(() => resizeViewer());
 
-    const mtlUrl = `/api/assets/${jobId}/${jobId}.mtl`;
     const objUrl = `/api/download/${jobId}.obj`;
-    const baseUrl = `/api/assets/${jobId}/`;
+    const textureUrl = `/api/assets/${jobId}/${jobId}_texture.png`;
 
-    console.log("[img2mesh] Loading MTL:", mtlUrl);
-    const mtlLoader = new MTLLoader();
-    mtlLoader.setResourcePath(baseUrl);
-    mtlLoader.load(mtlUrl, (materials) => {
-        console.log("[img2mesh] MTL loaded, materials:", Object.keys(materials.materials));
-        materials.preload();
-        const objLoader = new OBJLoader();
-        objLoader.setMaterials(materials);
+    // Load texture directly (bypasses MTLLoader path resolution issues)
+    console.log("[img2mesh] Loading texture:", textureUrl);
+    const textureLoader = new THREE.TextureLoader();
+    textureLoader.load(textureUrl, (texture) => {
+        console.log("[img2mesh] Texture loaded:", texture.image.width, "x", texture.image.height);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.flipY = false;
+
+        const material = new THREE.MeshStandardMaterial({
+            map: texture,
+            roughness: 0.8,
+            metalness: 0.0,
+        });
+
         console.log("[img2mesh] Loading OBJ:", objUrl);
+        const objLoader = new OBJLoader();
         objLoader.load(objUrl, (obj) => {
             console.log("[img2mesh] OBJ loaded, children:", obj.children.length);
+
+            // Apply texture material to all meshes
+            obj.traverse((child) => {
+                if (child.isMesh) {
+                    child.material = material;
+                }
+            });
 
             // Center and fit the model
             const box = new THREE.Box3().setFromObject(obj);
@@ -112,7 +125,7 @@ function loadModel(jobId) {
         );
     },
     undefined,
-    (err) => console.error("[img2mesh] MTL load error:", err)
+    (err) => console.error("[img2mesh] Texture load error:", err)
     );
 }
 
