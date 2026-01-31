@@ -37,10 +37,7 @@ def get_tsr_model():
         )
         device = "cuda" if torch.cuda.is_available() else "cpu"
         _tsr_model.to(device)
-        # Use float16 on GPU to halve VRAM usage
-        if device == "cuda":
-            _tsr_model.half()
-        logger.info(f"TripoSR model loaded on {device} (dtype={'float16' if device == 'cuda' else 'float32'})")
+        logger.info(f"TripoSR model loaded on {device}")
     return _tsr_model
 
 
@@ -78,13 +75,14 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    with torch.no_grad():
+    use_amp = torch.cuda.is_available()
+    with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
         scene_codes = model([image_rgb], device=device)
 
-    # Extract mesh on CPU to avoid VRAM spike from marching cubes
+    # Clear VRAM before mesh extraction to avoid OOM from marching cubes
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast("cuda", enabled=use_amp):
         meshes = model.extract_mesh(scene_codes, resolution=256, has_vertex_color=True)
 
     # Clear cache after inference
