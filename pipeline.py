@@ -57,17 +57,16 @@ def _extract_mesh_low_vram(
 ) -> trimesh.Trimesh:
     """
     Extract mesh from scene code using chunked GPU queries to stay within VRAM.
-    Density and color are queried in small batches, marching cubes runs on CPU.
+    Reproduces the exact logic of TSR.extract_mesh but processes points in batches.
     """
     model.set_marching_cubes_resolution(resolution)
     helper = model.isosurface_helper
-    grid_verts = helper.grid_vertices  # (resolution^3, 3) on CPU or GPU
     radius = model.renderer.cfg.radius
 
-    # Scale grid vertices to model space
-    scaled_verts = scale_tensor(
-        grid_verts, helper.points_range, (-radius, radius)
-    )
+    # Grid vertices are (resolution^3, 3) on CPU
+    grid_verts = helper.grid_vertices
+    # Scale to model space, matching original: scale_tensor(grid.to(device), points_range, (-r, r))
+    scaled_verts = scale_tensor(grid_verts, helper.points_range, (-radius, radius))
 
     # Query density in chunks on GPU
     density_chunks = []
@@ -77,33 +76,33 @@ def _extract_mesh_low_vram(
             d = model.renderer.query_triplane(model.decoder, chunk, scene_code)["density_act"]
         density_chunks.append(d.cpu())
         del chunk, d
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    density = torch.cat(density_chunks, dim=0)
+    # density shape: (resolution^3, 1) -> squeeze to (resolution^3,)
+    density = torch.cat(density_chunks, dim=0).squeeze(-1)
 
-    # Run marching cubes on CPU
-    v_pos, t_pos_idx = helper(-(density.to(helper.grid_vertices.device) - threshold))
+    # Run marching cubes on CPU — pass -(density - threshold), same as original
+    v_pos, t_pos_idx = helper(-(density - threshold))
     v_pos = scale_tensor(v_pos, helper.points_range, (-radius, radius))
 
     # Query vertex colors in chunks on GPU
     color_chunks = []
-    v_pos_gpu = v_pos.to(scene_code.device)
-    for i in range(0, v_pos_gpu.shape[0], chunk_size):
-        chunk = v_pos_gpu[i : i + chunk_size]
+    for i in range(0, v_pos.shape[0], chunk_size):
+        chunk = v_pos[i : i + chunk_size].to(scene_code.device)
         with torch.no_grad():
             c = model.renderer.query_triplane(model.decoder, chunk, scene_code)["color"]
         color_chunks.append(c.cpu())
         del chunk, c
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     color = torch.cat(color_chunks, dim=0)
 
     return trimesh.Trimesh(
         vertices=v_pos.cpu().numpy(),
         faces=t_pos_idx.cpu().numpy(),
-        vertex_colors=color.numpy(),
+        vertex_colors=color.cpu().numpy(),
     )
 
 
