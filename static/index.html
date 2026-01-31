@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>img2mesh</title>
+    <link rel="stylesheet" href="/style.css">
+    <!-- Google's model-viewer for 3D preview -->
+    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.3.0/model-viewer.min.js"></script>
+</head>
+<body>
+    <header>
+        <h1>img2mesh</h1>
+        <p>Upload an image, get a 3D model</p>
+    </header>
+
+    <div class="container">
+        <div class="dropzone" id="dropzone">
+            <img class="preview-img" id="previewImg" alt="Preview">
+            <input type="file" id="fileInput" accept="image/*">
+            <div class="label">Drop an image here or <strong>click to browse</strong></div>
+        </div>
+
+        <div class="status" id="status"></div>
+
+        <div class="viewer-wrapper" id="viewerWrapper">
+            <model-viewer
+                id="modelViewer"
+                alt="Generated 3D model"
+                camera-controls
+                touch-action="pan-y"
+                auto-rotate
+                shadow-intensity="1"
+            ></model-viewer>
+        </div>
+
+        <div class="downloads" id="downloads"></div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
