@@ -17,7 +17,7 @@ import torch
 import trimesh
 import xatlas
 from PIL import Image
-from tsr.bake_texture import bake_texture
+from tsr.bake_texture import make_atlas, rasterize_position_atlas
 from tsr.utils import remove_background as tsr_remove_background, resize_foreground
 
 logger = logging.getLogger(__name__)
@@ -101,15 +101,42 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
 
     mesh = meshes[0]
 
-    # Move model and scene code to CPU for texture baking (avoids device mismatch)
-    logger.info(f"[{job_id}] Baking texture (this queries the triplane for colors)...")
-    model.cpu()
-    scene_code_cpu = scene_codes[0].cpu()
-    bake_output = bake_texture(mesh, model, scene_code_cpu, texture_resolution=2048)
-    logger.info(f"[{job_id}] Texture baking complete. Keys: {list(bake_output.keys())}")
-    # Move model back to GPU for next request
+    # Bake texture: UV unwrap with xatlas, rasterize position atlas with moderngl,
+    # then query triplane on GPU for colors (keeps model on GPU for correct results)
+    logger.info(f"[{job_id}] Baking texture...")
+    texture_resolution = 2048
+    texture_padding = round(max(2, texture_resolution / 256))
+
+    atlas = make_atlas(mesh, texture_resolution, texture_padding)
+    positions_texture = rasterize_position_atlas(
+        mesh, atlas["vmapping"], atlas["indices"], atlas["uvs"],
+        texture_resolution, texture_padding,
+    )
+
+    # Query colors on GPU (keeps model on correct device)
+    scene_code = scene_codes[0]
+    positions = torch.tensor(
+        positions_texture.reshape(-1, 4)[:, :3],
+        dtype=torch.float32,
+        device=device,
+    )
+    with torch.no_grad():
+        queried = model.renderer.query_triplane(model.decoder, positions, scene_code)
+    rgb_f = queried["color"].cpu().numpy().reshape(-1, 3)
+    alpha_mask = positions_texture.reshape(-1, 4)[:, 3]
+    rgba_f = np.concatenate([rgb_f, alpha_mask[:, None]], axis=1)
+    rgba_f[alpha_mask == 0.0] = [0, 0, 0, 0]
+    colors = rgba_f.reshape(texture_resolution, texture_resolution, 4)
+
+    bake_output = {
+        "vmapping": atlas["vmapping"],
+        "indices": atlas["indices"],
+        "uvs": atlas["uvs"],
+        "colors": colors,
+    }
+    logger.info(f"[{job_id}] Texture baking complete.")
+
     if torch.cuda.is_available():
-        model.to("cuda")
         torch.cuda.empty_cache()
 
     # Export formats
