@@ -153,7 +153,7 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
         logger.info(f"[{job_id}] Visible texel RGB min={visible[:, :3].min():.3f}, max={visible[:, :3].max():.3f}, mean={visible[:, :3].mean():.3f}")
     # Convert to RGB — use black for empty texels
     rgb = (colors[:, :, :3] * 255.0).clip(0, 255).astype(np.uint8)
-    texture_img = Image.fromarray(rgb).transpose(Image.FLIP_TOP_BOTTOM)
+    texture_img = Image.fromarray(rgb)
     texture_path = output_dir / f"{job_id}_texture.png"
     texture_img.save(str(texture_path))
     logger.info(f"[{job_id}] Saved texture to {texture_path} ({texture_img.size})")
