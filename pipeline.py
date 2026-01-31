@@ -135,6 +135,19 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     else:
         mesh = raw_mesh
 
+    # Ensure vertex colors are uint8 [0,255] — TripoSR returns float [0,1]
+    if mesh.visual.vertex_colors is not None:
+        vc = np.array(mesh.visual.vertex_colors, dtype=np.float64)
+        if vc.max() <= 1.0:
+            vc = (vc * 255).clip(0, 255).astype(np.uint8)
+        else:
+            vc = vc.clip(0, 255).astype(np.uint8)
+        # Ensure RGBA
+        if vc.shape[-1] == 3:
+            alpha = np.full((vc.shape[0], 1), 255, dtype=np.uint8)
+            vc = np.hstack([vc, alpha])
+        mesh.visual.vertex_colors = vc
+
     # Center and normalize scale
     mesh.vertices -= mesh.vertices.mean(axis=0)
     scale = np.abs(mesh.vertices).max()
@@ -145,17 +158,24 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     results = {}
 
-    # GLB (default)
+    # GLB (default — supports vertex colors natively)
     glb_path = output_dir / f"{job_id}.glb"
     mesh.export(str(glb_path), file_type="glb")
     results["glb"] = glb_path
 
-    # OBJ
+    # OBJ with material — bake vertex colors into a texture for OBJ support
     obj_path = output_dir / f"{job_id}.obj"
-    mesh.export(str(obj_path), file_type="obj")
+    try:
+        # Convert vertex colors to a face-based texture via trimesh
+        textured = mesh.copy()
+        textured.visual = textured.visual.to_texture()
+        textured.export(str(obj_path), file_type="obj")
+    except Exception:
+        # Fallback: export without texture
+        mesh.export(str(obj_path), file_type="obj")
     results["obj"] = obj_path
 
-    # STL
+    # STL (no color support)
     stl_path = output_dir / f"{job_id}.stl"
     mesh.export(str(stl_path), file_type="stl")
     results["stl"] = stl_path
