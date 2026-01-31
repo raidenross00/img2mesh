@@ -182,24 +182,34 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     obj_path.write_text(f"mtllib {job_id}.mtl\n{obj_content}")
     results["obj"] = obj_path
 
-    # GLB with texture
+    # GLB with texture — build manually via trimesh Scene for reliable texture embedding
     logger.info(f"[{job_id}] Exporting GLB with baked texture...")
     glb_path = output_dir / f"{job_id}.glb"
+
+    # Save texture to a temp buffer for trimesh to read
+    import io as _io
+    tex_buf = _io.BytesIO()
+    texture_img.save(tex_buf, format="PNG")
+    tex_buf.seek(0)
+    tex_pil = Image.open(tex_buf)
+
     textured_mesh = trimesh.Trimesh(
         vertices=mesh.vertices[vmapping],
         faces=indices,
         process=False,
     )
-    material = trimesh.visual.material.PBRMaterial(
-        baseColorTexture=texture_img,
-        metallicFactor=0.0,
-        roughnessFactor=1.0,
+    # Use SimpleMaterial for broader compatibility
+    material = trimesh.visual.material.SimpleMaterial(
+        image=tex_pil,
+        diffuse=[255, 255, 255, 255],
     )
     textured_mesh.visual = trimesh.visual.TextureVisuals(
         uv=uvs,
         material=material,
     )
-    textured_mesh.export(str(glb_path), file_type="glb")
+    # Export as GLB via scene for proper gltf material handling
+    scene = trimesh.Scene(geometry={"mesh": textured_mesh})
+    scene.export(str(glb_path), file_type="glb")
     logger.info(f"[{job_id}] GLB exported ({glb_path.stat().st_size} bytes)")
     results["glb"] = glb_path
 
