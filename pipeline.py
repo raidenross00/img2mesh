@@ -53,6 +53,47 @@ def remove_background(image_bytes: bytes) -> Image.Image:
     return output_image
 
 
+def _prepare_image(image: Image.Image, foreground_ratio: float = 0.85) -> Image.Image:
+    """
+    Preprocess image for TripoSR: crop foreground, pad to square,
+    add margin, composite onto gray background. Matches the official pipeline.
+    """
+    if image.mode != "RGBA":
+        image = image.convert("RGBA")
+
+    arr = np.array(image)
+    alpha = np.where(arr[..., 3] > 0)
+    if alpha[0].size == 0:
+        # No foreground found, return gray square
+        return Image.new("RGB", (256, 256), (127, 127, 127))
+
+    # Crop to foreground bounding box
+    y1, y2 = alpha[0].min(), alpha[0].max()
+    x1, x2 = alpha[1].min(), alpha[1].max()
+    fg = arr[y1:y2, x1:x2]
+
+    # Pad to square
+    size = max(fg.shape[0], fg.shape[1])
+    ph0, pw0 = (size - fg.shape[0]) // 2, (size - fg.shape[1]) // 2
+    ph1, pw1 = size - fg.shape[0] - ph0, size - fg.shape[1] - pw0
+    padded = np.pad(fg, ((ph0, ph1), (pw0, pw1), (0, 0)), mode="constant", constant_values=0)
+
+    # Add margin so foreground occupies foreground_ratio of the frame
+    new_size = int(padded.shape[0] / foreground_ratio)
+    ph0, pw0 = (new_size - size) // 2, (new_size - size) // 2
+    ph1, pw1 = new_size - size - ph0, new_size - size - pw0
+    padded = np.pad(padded, ((ph0, ph1), (pw0, pw1), (0, 0)), mode="constant", constant_values=0)
+
+    # Alpha-composite onto gray (0.5) background
+    img_f = padded.astype(np.float32) / 255.0
+    alpha_mask = img_f[..., 3:4]
+    rgb = img_f[..., :3] * alpha_mask + (1 - alpha_mask) * 0.5
+    rgb = (rgb * 255).clip(0, 255).astype(np.uint8)
+
+    result = Image.fromarray(rgb).resize((256, 256), Image.LANCZOS)
+    return result
+
+
 def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     """
     Run TripoSR on a clean RGBA image and export mesh files.
@@ -61,16 +102,7 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     model = get_tsr_model()
     device = next(model.parameters()).device
 
-    # TripoSR expects RGB image on white background
-    if image.mode == "RGBA":
-        bg = Image.new("RGB", image.size, (255, 255, 255))
-        bg.paste(image, mask=image.split()[3])
-        image_rgb = bg
-    else:
-        image_rgb = image.convert("RGB")
-
-    # Resize to 256x256 as expected by TripoSR
-    image_rgb = image_rgb.resize((256, 256), Image.LANCZOS)
+    image_rgb = _prepare_image(image)
 
     logger.info(f"[{job_id}] Running TripoSR inference...")
     # Clear CUDA cache before inference
