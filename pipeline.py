@@ -102,15 +102,14 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     mesh = meshes[0]
 
     # Move model and scene code to CPU for texture baking (avoids device mismatch)
-    logger.info(f"[{job_id}] Baking texture...")
+    logger.info(f"[{job_id}] Baking texture (this queries the triplane for colors)...")
     model.cpu()
     scene_code_cpu = scene_codes[0].cpu()
     bake_output = bake_texture(mesh, model, scene_code_cpu, texture_resolution=2048)
+    logger.info(f"[{job_id}] Texture baking complete. Keys: {list(bake_output.keys())}")
     # Move model back to GPU for next request
     if torch.cuda.is_available():
         model.to("cuda")
-
-    if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
     # Export formats
@@ -118,18 +117,21 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     results = {}
 
     # Build the texture image
+    colors = bake_output["colors"]
+    logger.info(f"[{job_id}] Texture colors shape={colors.shape}, min={colors.min():.3f}, max={colors.max():.3f}")
     texture_img = Image.fromarray(
-        (bake_output["colors"] * 255.0).astype(np.uint8)
+        (colors * 255.0).clip(0, 255).astype(np.uint8)
     ).transpose(Image.FLIP_TOP_BOTTOM)
     texture_path = output_dir / f"{job_id}_texture.png"
     texture_img.save(str(texture_path))
+    logger.info(f"[{job_id}] Saved texture to {texture_path} ({texture_img.size})")
 
     # Get remapped mesh data
     vmapping = bake_output["vmapping"]
     indices = bake_output["indices"]
     uvs = bake_output["uvs"]
 
-    # OBJ with texture (primary format — best color support)
+    # OBJ with texture
     logger.info(f"[{job_id}] Exporting OBJ with texture...")
     obj_path = output_dir / f"{job_id}.obj"
     xatlas.export(
@@ -139,30 +141,32 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
         uvs,
         mesh.vertex_normals[vmapping],
     )
-    # Write MTL file referencing the texture
     mtl_path = output_dir / f"{job_id}.mtl"
     mtl_path.write_text(
         f"newmtl material0\n"
         f"map_Kd {job_id}_texture.png\n"
     )
-    # Prepend mtllib to OBJ
     obj_content = obj_path.read_text()
     obj_path.write_text(f"mtllib {job_id}.mtl\n{obj_content}")
     results["obj"] = obj_path
 
-    # GLB with texture
-    logger.info(f"[{job_id}] Exporting GLB...")
+    # GLB with texture — embed texture directly into the GLB
+    logger.info(f"[{job_id}] Exporting GLB with baked texture...")
     glb_path = output_dir / f"{job_id}.glb"
     textured_mesh = trimesh.Trimesh(
         vertices=mesh.vertices[vmapping],
         faces=indices,
         process=False,
     )
+    material = trimesh.visual.material.PBRMaterial(
+        baseColorTexture=texture_img,
+    )
     textured_mesh.visual = trimesh.visual.TextureVisuals(
         uv=uvs,
-        image=texture_img,
+        material=material,
     )
     textured_mesh.export(str(glb_path), file_type="glb")
+    logger.info(f"[{job_id}] GLB exported ({glb_path.stat().st_size} bytes)")
     results["glb"] = glb_path
 
     # STL (no color support)
