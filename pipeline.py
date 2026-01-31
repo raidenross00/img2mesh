@@ -101,9 +101,14 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
 
     mesh = meshes[0]
 
-    # Bake texture atlas — queries the triplane directly for high-quality colors
+    # Move model and scene code to CPU for texture baking (avoids device mismatch)
     logger.info(f"[{job_id}] Baking texture...")
-    bake_output = bake_texture(mesh, model, scene_codes[0], texture_resolution=2048)
+    model.cpu()
+    scene_code_cpu = scene_codes[0].cpu()
+    bake_output = bake_texture(mesh, model, scene_code_cpu, texture_resolution=2048)
+    # Move model back to GPU for next request
+    if torch.cuda.is_available():
+        model.to("cuda")
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
