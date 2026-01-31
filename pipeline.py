@@ -1,8 +1,12 @@
 import io
 import logging
+import os
 import sys
 import tempfile
 from pathlib import Path
+
+# Reduce VRAM fragmentation on GPUs with limited memory
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # Add TripoSR to path
 sys.path.insert(0, str(Path(__file__).parent / "TripoSR"))
@@ -33,7 +37,10 @@ def get_tsr_model():
         )
         device = "cuda" if torch.cuda.is_available() else "cpu"
         _tsr_model.to(device)
-        logger.info(f"TripoSR model loaded on {device}")
+        # Use float16 on GPU to halve VRAM usage
+        if device == "cuda":
+            _tsr_model.half()
+        logger.info(f"TripoSR model loaded on {device} (dtype={'float16' if device == 'cuda' else 'float32'})")
     return _tsr_model
 
 
@@ -71,9 +78,13 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    with torch.no_grad(), torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+    with torch.no_grad():
         scene_codes = model([image_rgb], device=device)
-        # Resolution 256 for quality, autocast handles mixed precision
+
+    # Extract mesh on CPU to avoid VRAM spike from marching cubes
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    with torch.no_grad():
         meshes = model.extract_mesh(scene_codes, resolution=256, has_vertex_color=True)
 
     # Clear cache after inference
