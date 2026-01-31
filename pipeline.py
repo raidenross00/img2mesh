@@ -15,7 +15,9 @@ import numpy as np
 import rembg
 import torch
 import trimesh
+import xatlas
 from PIL import Image
+from tsr.bake_texture import bake_texture
 from tsr.utils import remove_background as tsr_remove_background, resize_foreground
 
 logger = logging.getLogger(__name__)
@@ -72,7 +74,7 @@ def prepare_image(image: Image.Image, foreground_ratio: float = 0.85) -> Image.I
 def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     """
     Run TripoSR on a clean RGBA image and export mesh files.
-    Returns dict with paths to exported files.
+    Uses texture baking for proper colors, matching official run.py --bake-texture.
     """
     model = get_tsr_model()
     device = next(model.parameters()).device
@@ -89,50 +91,78 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    # Extract mesh WITHOUT vertex colors (bake_texture handles colors separately)
     logger.info(f"[{job_id}] Extracting mesh...")
     with torch.no_grad():
-        meshes = model.extract_mesh(scene_codes, resolution=256, has_vertex_color=True)
+        meshes = model.extract_mesh(scene_codes, has_vertex_color=False, resolution=256)
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
     mesh = meshes[0]
 
-    # Post-process with trimesh
-    logger.info(f"[{job_id}] Post-processing mesh...")
-    if isinstance(mesh, trimesh.Scene):
-        mesh = trimesh.util.concatenate(
-            [g for g in mesh.geometry.values() if isinstance(g, trimesh.Trimesh)]
-        )
+    # Bake texture atlas — queries the triplane directly for high-quality colors
+    logger.info(f"[{job_id}] Baking texture...")
+    bake_output = bake_texture(mesh, model, scene_codes[0], texture_resolution=2048)
 
-    # Center and normalize scale
-    mesh.vertices -= mesh.vertices.mean(axis=0)
-    scale = np.abs(mesh.vertices).max()
-    if scale > 0:
-        mesh.vertices /= scale
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # Export formats
     output_dir.mkdir(parents=True, exist_ok=True)
     results = {}
 
-    # GLB (supports vertex colors natively)
-    glb_path = output_dir / f"{job_id}.glb"
-    mesh.export(str(glb_path), file_type="glb")
-    results["glb"] = glb_path
+    # Build the texture image
+    texture_img = Image.fromarray(
+        (bake_output["colors"] * 255.0).astype(np.uint8)
+    ).transpose(Image.FLIP_TOP_BOTTOM)
+    texture_path = output_dir / f"{job_id}_texture.png"
+    texture_img.save(str(texture_path))
 
-    # OBJ (vertex colors baked to texture)
+    # Get remapped mesh data
+    vmapping = bake_output["vmapping"]
+    indices = bake_output["indices"]
+    uvs = bake_output["uvs"]
+
+    # OBJ with texture (primary format — best color support)
+    logger.info(f"[{job_id}] Exporting OBJ with texture...")
     obj_path = output_dir / f"{job_id}.obj"
-    try:
-        textured = mesh.copy()
-        textured.visual = textured.visual.to_texture()
-        textured.export(str(obj_path), file_type="obj")
-    except Exception:
-        mesh.export(str(obj_path), file_type="obj")
+    xatlas.export(
+        str(obj_path),
+        mesh.vertices[vmapping],
+        indices,
+        uvs,
+        mesh.vertex_normals[vmapping],
+    )
+    # Write MTL file referencing the texture
+    mtl_path = output_dir / f"{job_id}.mtl"
+    mtl_path.write_text(
+        f"newmtl material0\n"
+        f"map_Kd {job_id}_texture.png\n"
+    )
+    # Prepend mtllib to OBJ
+    obj_content = obj_path.read_text()
+    obj_path.write_text(f"mtllib {job_id}.mtl\n{obj_content}")
     results["obj"] = obj_path
+
+    # GLB with texture
+    logger.info(f"[{job_id}] Exporting GLB...")
+    glb_path = output_dir / f"{job_id}.glb"
+    textured_mesh = trimesh.Trimesh(
+        vertices=mesh.vertices[vmapping],
+        faces=indices,
+        process=False,
+    )
+    textured_mesh.visual = trimesh.visual.TextureVisuals(
+        uv=uvs,
+        image=texture_img,
+    )
+    textured_mesh.export(str(glb_path), file_type="glb")
+    results["glb"] = glb_path
 
     # STL (no color support)
     stl_path = output_dir / f"{job_id}.stl"
-    mesh.export(str(stl_path), file_type="stl")
+    textured_mesh.export(str(stl_path), file_type="stl")
     results["stl"] = stl_path
 
     logger.info(f"[{job_id}] Mesh exported: {list(results.keys())}")
