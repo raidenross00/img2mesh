@@ -16,7 +16,6 @@ import torch
 import trimesh
 from PIL import Image
 from rembg import remove
-from tsr.utils import scale_tensor
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +37,8 @@ def get_tsr_model():
         )
         device = "cuda" if torch.cuda.is_available() else "cpu"
         _tsr_model.to(device)
+        # Enable renderer chunking to limit VRAM usage during mesh extraction
+        _tsr_model.renderer.set_chunk_size(8192)
         logger.info(f"TripoSR model loaded on {device}")
     return _tsr_model
 
@@ -50,60 +51,6 @@ def remove_background(image_bytes: bytes) -> Image.Image:
     if output_image.mode != "RGBA":
         output_image = output_image.convert("RGBA")
     return output_image
-
-
-def _extract_mesh_low_vram(
-    model, scene_code, resolution: int = 256, threshold: float = 25.0, chunk_size: int = 50000
-) -> trimesh.Trimesh:
-    """
-    Extract mesh from scene code using chunked GPU queries to stay within VRAM.
-    Reproduces the exact logic of TSR.extract_mesh but processes points in batches.
-    """
-    model.set_marching_cubes_resolution(resolution)
-    helper = model.isosurface_helper
-    radius = model.renderer.cfg.radius
-
-    # Grid vertices are (resolution^3, 3) on CPU
-    grid_verts = helper.grid_vertices
-    # Scale to model space, matching original: scale_tensor(grid.to(device), points_range, (-r, r))
-    scaled_verts = scale_tensor(grid_verts, helper.points_range, (-radius, radius))
-
-    # Query density in chunks on GPU
-    density_chunks = []
-    for i in range(0, scaled_verts.shape[0], chunk_size):
-        chunk = scaled_verts[i : i + chunk_size].to(scene_code.device)
-        with torch.no_grad():
-            d = model.renderer.query_triplane(model.decoder, chunk, scene_code)["density_act"]
-        density_chunks.append(d.cpu())
-        del chunk, d
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    # density shape: (resolution^3, 1) -> squeeze to (resolution^3,)
-    density = torch.cat(density_chunks, dim=0).squeeze(-1)
-
-    # Run marching cubes on CPU — pass -(density - threshold), same as original
-    v_pos, t_pos_idx = helper(-(density - threshold))
-    v_pos = scale_tensor(v_pos, helper.points_range, (-radius, radius))
-
-    # Query vertex colors in chunks on GPU
-    color_chunks = []
-    for i in range(0, v_pos.shape[0], chunk_size):
-        chunk = v_pos[i : i + chunk_size].to(scene_code.device)
-        with torch.no_grad():
-            c = model.renderer.query_triplane(model.decoder, chunk, scene_code)["color"]
-        color_chunks.append(c.cpu())
-        del chunk, c
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    color = torch.cat(color_chunks, dim=0)
-
-    return trimesh.Trimesh(
-        vertices=v_pos.cpu().numpy(),
-        faces=t_pos_idx.cpu().numpy(),
-        vertex_colors=color.cpu().numpy(),
-    )
 
 
 def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
@@ -133,9 +80,19 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
     with torch.no_grad():
         scene_codes = model([image_rgb], device=device)
 
-    # Extract mesh with chunked GPU queries to avoid OOM on 8GB cards
-    logger.info(f"[{job_id}] Extracting mesh (low-VRAM mode)...")
-    raw_mesh = _extract_mesh_low_vram(model, scene_codes[0], resolution=256, chunk_size=50000)
+    # Clear VRAM before mesh extraction
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    logger.info(f"[{job_id}] Extracting mesh...")
+    with torch.no_grad():
+        meshes = model.extract_mesh(scene_codes, resolution=256, has_vertex_color=True)
+
+    # Clear cache after inference
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    raw_mesh = meshes[0]  # trimesh object
 
     # Post-process with trimesh
     logger.info(f"[{job_id}] Post-processing mesh...")
