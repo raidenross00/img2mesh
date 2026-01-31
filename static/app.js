@@ -68,21 +68,30 @@ function loadModel(jobId) {
         currentModel = null;
     }
 
+    // Ensure layout is complete before sizing
+    requestAnimationFrame(() => resizeViewer());
+
     const mtlUrl = `/api/assets/${jobId}/${jobId}.mtl`;
     const objUrl = `/api/download/${jobId}.obj`;
     const baseUrl = `/api/assets/${jobId}/`;
 
+    console.log("[img2mesh] Loading MTL:", mtlUrl);
     const mtlLoader = new MTLLoader();
     mtlLoader.setResourcePath(baseUrl);
     mtlLoader.load(mtlUrl, (materials) => {
+        console.log("[img2mesh] MTL loaded, materials:", Object.keys(materials.materials));
         materials.preload();
         const objLoader = new OBJLoader();
         objLoader.setMaterials(materials);
+        console.log("[img2mesh] Loading OBJ:", objUrl);
         objLoader.load(objUrl, (obj) => {
+            console.log("[img2mesh] OBJ loaded, children:", obj.children.length);
+
             // Center and fit the model
             const box = new THREE.Box3().setFromObject(obj);
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
+            console.log("[img2mesh] Model bounds:", size.x.toFixed(3), size.y.toFixed(3), size.z.toFixed(3));
             const maxDim = Math.max(size.x, size.y, size.z);
             const scale = 1.5 / maxDim;
             obj.scale.setScalar(scale);
@@ -96,8 +105,15 @@ function loadModel(jobId) {
             controls.target.set(0, 0, 0);
             controls.update();
             resizeViewer();
-        });
-    });
+            console.log("[img2mesh] Model added to scene");
+        },
+        undefined,
+        (err) => console.error("[img2mesh] OBJ load error:", err)
+        );
+    },
+    undefined,
+    (err) => console.error("[img2mesh] MTL load error:", err)
+    );
 }
 
 // Drag-and-drop handlers

@@ -179,7 +179,7 @@ def generate_mesh(image: Image.Image, output_dir: Path, job_id: str) -> dict:
         f"map_Kd {job_id}_texture.png\n"
     )
     obj_content = obj_path.read_text()
-    obj_path.write_text(f"mtllib {job_id}.mtl\n{obj_content}")
+    obj_path.write_text(f"mtllib {job_id}.mtl\nusemtl material0\n{obj_content}")
     results["obj"] = obj_path
 
     # GLB with texture — build manually via trimesh Scene for reliable texture embedding
